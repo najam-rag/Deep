@@ -1,15 +1,19 @@
+streamlit>=1.27.0
+langchain==0.1.13
+langchain-community==0.0.29
+langchain-openai==0.0.8
+python-dotenv==1.0.0
+pypdf==3.17.4
+faiss-cpu==1.7.4
+pdf2image==1.16.3
+pytesseract==0.3.10
+pymupdf==1.23.5
+pillow==10.1.0
+fpdf==1.7.2
+rank_bm25==0.2.2
+passlib==1.7.4
 
-streamlit
-langchain
-langchain-community
-langchain-openai
-python-dotenv
-pypdf
-faiss-cpu
-pdf2image
-pytesseract
+# System dependencies (add these in packages.txt for Streamlit Cloud)
 poppler-utils
-pymupdf
-pillow
-fpdf
-pytesseract
+tesseract-ocr
+libtesseract-dev
