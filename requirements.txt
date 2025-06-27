@@ -1,19 +1,31 @@
+# Core Framework
 streamlit>=1.27.0
+
+# LangChain Ecosystem
 langchain==0.1.13
 langchain-community==0.0.29
 langchain-openai==0.0.8
-python-dotenv==1.0.0
+
+# Document Processing
 pypdf==3.17.4
-faiss-cpu==1.7.4
+pymupdf==1.23.5
+unstructured==0.12.4
 pdf2image==1.16.3
 pytesseract==0.3.10
-pymupdf==1.23.5
-pillow==10.1.0
-fpdf==1.7.2
+
+# Vector/Embedding
+faiss-cpu==1.7.4
 rank_bm25==0.2.2
+
+# Image/OCR Support
+pillow==10.1.0
+
+# Utilities
+python-dotenv==1.0.0
+fpdf==1.7.2
 passlib==1.7.4
 
-# System dependencies (add these in packages.txt for Streamlit Cloud)
+# System Dependencies (for packages.txt)
 poppler-utils
 tesseract-ocr
 libtesseract-dev
