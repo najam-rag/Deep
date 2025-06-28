@@ -3,7 +3,6 @@ import os
 import tempfile
 import re
 from typing import List
-from datetime import datetime
 
 # Document Processing
 from langchain_community.document_loaders import PyPDFLoader, UnstructuredPDFLoader
@@ -14,15 +13,15 @@ from langchain_core.documents import Document
 
 # Vectorstores and Retrieval
 from langchain_community.vectorstores import FAISS
-from langchain_community.embeddings import OpenAIEmbeddings
+from langchain_openai import OpenAIEmbeddings
 from langchain_community.retrievers import BM25Retriever
 
 # LLM Components
 from langchain_openai import ChatOpenAI
-from langchain.chains import RetrievalQA
+from langchain.chains import MultiRetrievalQAChain
 from langchain_core.prompts import PromptTemplate
 
-# Streamlit config
+# ===== Configuration =====
 st.set_page_config(page_title="⚡ Hybrid Codes Assistant", layout="wide")
 OPENAI_API_KEY = st.secrets["OPENAI_API_KEY"]
 
@@ -89,13 +88,15 @@ class SmartDocumentProcessor:
                 pass
 
     def _is_quality_acceptable(self, docs: List[Document]) -> bool:
+        if not docs:
+            return False
         return any(len(doc.page_content.strip()) > 100 for doc in docs)
 
     def _add_metadata(self, docs: List[Document]) -> List[Document]:
         for doc in docs:
-            match = re.search(r"(Clause|Section|Part)\s*(\d+(?:\.\d+)*)", doc.page_content, re.IGNORECASE)
-            if match:
-                doc.metadata["clause"] = f"{match.group(1)} {match.group(2)}"
+            clause_match = re.search(r"(Clause|Section|Part)\s*(\d+(?:\.\d+)*)", doc.page_content, re.IGNORECASE)
+            if clause_match:
+                doc.metadata["clause"] = f"{clause_match.group(1)} {clause_match.group(2)}"
             if any(x in doc.page_content[:100] for x in ["Table", "Figure", "Diagram"]):
                 doc.metadata["content_type"] = "visual"
         return docs
@@ -134,69 +135,32 @@ class HybridRetriever:
         self.bm25 = BM25Retriever.from_texts(texts)
         self.bm25.k = 5
 
-    def query(self, question: str) -> List[Document]:
-        if re.search(r"(clause|section|table)\s*[\d\.]+", question, re.IGNORECASE):
-            return self.bm25.invoke(question)
-        faiss_results = self.faiss.similarity_search(question, k=5)
-        bm25_results = self.bm25.invoke(question)
-        combined = {doc.metadata.get("page", ""): doc for doc in faiss_results + bm25_results}
-        return list(combined.values())[:5]
-
-# ===== QA System =====
-def create_qa_system(retriever: HybridRetriever, is_complex: bool):
+# ===== Adaptive QA System =====
+def create_qa_system(hybrid: HybridRetriever, is_complex: bool):
     llm = ChatOpenAI(
         model="gpt-4-turbo-preview" if is_complex else "gpt-3.5-turbo",
         temperature=0.2 if is_complex else 0,
         openai_api_key=OPENAI_API_KEY
     )
 
-    prompt_text = ("""Answer in detail with technical precision:
+    prompt_text = """Answer in detail with technical precision:
 Context: {context}
 Question: {question}
 Rules:
 1. Cite sources like [Clause X.Y]
 2. Explain underlying principles
-3. Compare to related standards if relevant"""
-    if is_complex else
-    """Give concise answer:
+3. Compare to related standards if relevant""" if is_complex else """Give concise answer:
 Context: {context}
 Question: {question}
 Rules:
 1. Cite source if available
-2. Keep answer under 2 sentences""")
+2. Keep answer under 2 sentences"""
 
     prompt = PromptTemplate.from_template(prompt_text)
 
-    qa = RetrievalQA.from_chain_type(
+    return MultiRetrievalQAChain.from_retrievers(
         llm=llm,
-        retriever=retriever,
-        chain_type="stuff",
-        chain_type_kwargs={"prompt": prompt},
+        retrievers=[hybrid.faiss.as_retriever(), hybrid.bm25],
+        prompt=prompt,
         return_source_documents=True
     )
-    return qa
-
-# ===== Streamlit App UI =====
-st.title("📘 Ask Your Standards Assistant")
-
-uploaded_file = st.file_uploader("📎 Upload PDF (e.g. AS3000)", type="pdf")
-question = st.text_input("🔍 Enter your question")
-
-if uploaded_file and question:
-    processor = SmartDocumentProcessor()
-    docs = processor.process(uploaded_file.read())
-
-    chunks = adaptive_chunking(docs, processor.ocr_fallback)
-    retriever = HybridRetriever(chunks)
-
-    is_complex = any(w in question.lower() for w in ["why", "how", "difference", "compare"])
-    qa = create_qa_system(retriever, is_complex)
-    result = qa.invoke(question)
-
-    st.subheader("📝 Answer")
-    st.write(result["result"])
-
-    st.subheader("📚 Sources")
-    for i, doc in enumerate(result["source_documents"], 1):
-        st.markdown(f"**Source {i}** (Page {doc.metadata.get('page', '?')}):")
-        st.code(doc.page_content.strip()[:500] + "...")
