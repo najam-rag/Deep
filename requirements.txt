@@ -10,3 +10,4 @@ pytesseract
 faiss-cpu
 pandas
 requests
+tqdm
