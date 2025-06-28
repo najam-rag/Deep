@@ -13,19 +13,19 @@ from langchain_core.documents import Document
 
 # Vectorstores and Retrieval
 from langchain_community.vectorstores import FAISS
-from langchain_openai import OpenAIEmbeddings
+from langchain_community.embeddings import OpenAIEmbeddings
 from langchain_community.retrievers import BM25Retriever
 
 # LLM Components
 from langchain_openai import ChatOpenAI
-from langchain.chains import MultiRetrievalQAChain
+from langchain.chains import RetrievalQA
 from langchain_core.prompts import PromptTemplate
 
-# ===== Configuration =====
+# === Streamlit Configuration ===
 st.set_page_config(page_title="⚡ Hybrid Codes Assistant", layout="wide")
 OPENAI_API_KEY = st.secrets["OPENAI_API_KEY"]
 
-# ===== Authentication =====
+# === Password Auth ===
 def check_password():
     if 'authenticated' not in st.session_state:
         st.sidebar.header("🔐 Login")
@@ -43,7 +43,7 @@ def check_password():
 if not check_password():
     st.stop()
 
-# ===== Adaptive Document Processor =====
+# === Smart Document Processor ===
 class SmartDocumentProcessor:
     def __init__(self):
         self.ocr_fallback = False
@@ -88,8 +88,6 @@ class SmartDocumentProcessor:
                 pass
 
     def _is_quality_acceptable(self, docs: List[Document]) -> bool:
-        if not docs:
-            return False
         return any(len(doc.page_content.strip()) > 100 for doc in docs)
 
     def _add_metadata(self, docs: List[Document]) -> List[Document]:
@@ -101,7 +99,7 @@ class SmartDocumentProcessor:
                 doc.metadata["content_type"] = "visual"
         return docs
 
-# ===== Adaptive Chunker =====
+# === Adaptive Chunker ===
 def adaptive_chunking(docs: List[Document], is_ocr: bool) -> List[Document]:
     splitter = RecursiveCharacterTextSplitter(
         chunk_size=1200 if is_ocr else 1000,
@@ -109,6 +107,7 @@ def adaptive_chunking(docs: List[Document], is_ocr: bool) -> List[Document]:
         separators=["\n\n", "•", "□", "■"] if is_ocr else ["\nClause", "\nSection", "\nTable", "\nFigure", "\n\n"],
         keep_separator=not is_ocr
     )
+
     chunks = splitter.split_documents(docs)
     merged_chunks = []
     buffer = ""
@@ -126,7 +125,7 @@ def adaptive_chunking(docs: List[Document], is_ocr: bool) -> List[Document]:
 
     return merged_chunks
 
-# ===== Smart Retriever =====
+# === Hybrid Retriever ===
 class HybridRetriever:
     def __init__(self, chunks: List[Document]):
         self.embeddings = OpenAIEmbeddings(model="text-embedding-3-small", openai_api_key=OPENAI_API_KEY)
@@ -135,32 +134,46 @@ class HybridRetriever:
         self.bm25 = BM25Retriever.from_texts(texts)
         self.bm25.k = 5
 
-# ===== Adaptive QA System =====
-def create_qa_system(hybrid: HybridRetriever, is_complex: bool):
+    def query(self, question: str) -> List[Document]:
+        if re.search(r"(clause|section|table)\s*[\d\.]+", question, re.IGNORECASE):
+            return self.bm25.invoke(question)
+        faiss_results = self.faiss.similarity_search(question, k=5)
+        bm25_results = self.bm25.invoke(question)
+        combined = {doc.metadata.get("page", ""): doc for doc in faiss_results + bm25_results}
+        return list(combined.values())[:5]
+
+# === QA System ===
+def create_qa_system(retriever: HybridRetriever, is_complex: bool):
     llm = ChatOpenAI(
         model="gpt-4-turbo-preview" if is_complex else "gpt-3.5-turbo",
         temperature=0.2 if is_complex else 0,
         openai_api_key=OPENAI_API_KEY
     )
 
-    prompt_text = """Answer in detail with technical precision:
-Context: {context}
-Question: {question}
-Rules:
-1. Cite sources like [Clause X.Y]
-2. Explain underlying principles
-3. Compare to related standards if relevant""" if is_complex else """Give concise answer:
-Context: {context}
-Question: {question}
-Rules:
-1. Cite source if available
-2. Keep answer under 2 sentences"""
+    prompt_text = (
+        "Answer in detail with technical precision:\n"
+        "Context: {context}\n"
+        "Question: {question}\n"
+        "Rules:\n"
+        "1. Cite sources like [Clause X.Y]\n"
+        "2. Explain underlying principles\n"
+        "3. Compare to related standards if relevant"
+        if is_complex else
+        "Give concise answer:\n"
+        "Context: {context}\n"
+        "Question: {question}\n"
+        "Rules:\n"
+        "1. Cite source if available\n"
+        "2. Keep answer under 2 sentences"
+    )
 
     prompt = PromptTemplate.from_template(prompt_text)
 
-    return MultiRetrievalQAChain.from_retrievers(
+    qa = RetrievalQA.from_chain_type(
         llm=llm,
-        retrievers=[hybrid.faiss.as_retriever(), hybrid.bm25],
-        prompt=prompt,
+        retriever=retriever,
+        chain_type="stuff",
+        chain_type_kwargs={"prompt": prompt},
         return_source_documents=True
     )
+    return qa
