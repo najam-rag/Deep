@@ -17,8 +17,8 @@ from langchain.schema import Document
 
 # Vectorstores and Retrieval
 from langchain_community.vectorstores import FAISS
-from langchain.embeddings import OpenAIEmbeddings
-from langchain.retrievers import BM25Retriever, EnsembleRetriever
+from langchain_community.embeddings import OpenAIEmbeddings
+from langchain_community.retrievers import BM25Retriever
 
 # LLM Components
 from langchain_openai import ChatOpenAI
@@ -160,16 +160,13 @@ def create_qa_system(retriever: HybridRetriever, is_complex: bool):
         openai_api_key=OPENAI_API_KEY
     )
 
-    if is_complex:
-        prompt_text = """Answer in detail with technical precision:
+    prompt_text = """Answer in detail with technical precision:
 Context: {context}
 Question: {question}
 Rules:
 1. Cite sources like [Clause X.Y]
 2. Explain underlying principles
-3. Compare to related standards if relevant"""
-    else:
-        prompt_text = """Give concise answer:
+3. Compare to related standards if relevant""" if is_complex else """Give concise answer:
 Context: {context}
 Question: {question}
 Rules:
@@ -182,7 +179,7 @@ Rules:
         llm=llm,
         retriever=retriever,
         chain_type="stuff",
-        chain_type_kwargs={"prompt": prompt}
+        chain_type_kwargs={"prompt": prompt},
+        return_source_documents=True
     )
-    qa.return_source_documents = True
     return qa
