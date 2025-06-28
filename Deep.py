@@ -1,10 +1,3 @@
-"""
-Deepseek.py - Hybrid Codes & Standards Assistant
-
-A Streamlit application that provides intelligent document analysis and Q&A capabilities
-for technical standards and codes using RAG (Retrieval-Augmented Generation) architecture.
-"""
-
 import streamlit as st
 import os
 import hashlib
@@ -15,60 +8,63 @@ from datetime import datetime
 from functools import wraps
 from typing import List, Tuple, Optional
 
-# ===== DOCUMENT PROCESSING IMPORTS =====
+# Document Processing
 from langchain_community.document_loaders import PyPDFLoader, UnstructuredPDFLoader
 from langchain_text_splitters import RecursiveCharacterTextSplitter
-from pdf2image import convert_from_path  # For OCR fallback
-import pytesseract  # OCR engine
-from langchain.schema import Document  # LangChain document format
+from pdf2image import convert_from_path
+import pytesseract
+from langchain.schema import Document
 
-# ===== VECTORSTORES AND RETRIEVAL =====
-from langchain_community.vectorstores import FAISS  # Vector similarity search
-from langchain.embeddings import OpenAIEmbeddings  # Text embeddings
-from langchain.retrievers import BM25Retriever, EnsembleRetriever  # Keyword-based retrieval
+# Vectorstores and Retrieval
+from langchain_community.vectorstores import FAISS
+from langchain.embeddings import OpenAIEmbeddings
+from langchain.retrievers import BM25Retriever, EnsembleRetriever
 
-# ===== LLM COMPONENTS =====
-from langchain_openai import ChatOpenAI  # GPT models interface
-from langchain.chains import RetrievalQA  # Question-answering chain
-from langchain.prompts import PromptTemplate  # Prompt engineering
+# LLM Components
+from langchain_openai import ChatOpenAI
+from langchain.chains import RetrievalQA
+from langchain.prompts import PromptTemplate
 
-# ===== UI AND UTILITIES =====
-import pandas as pd  # Data display
-import requests  # For fetching preloaded standards
+# UI and Utilities
+import pandas as pd
+import requests
 
-# ===== CONFIGURATION =====
+# ===== Configuration =====
 st.set_page_config(page_title="⚡ Hybrid Codes Assistant", layout="wide")
-OPENAI_API_KEY = st.secrets["OPENAI_API_KEY"]  # Get API key from Streamlit secrets
+OPENAI_API_KEY = st.secrets["OPENAI_API_KEY"]
 
-# ===== ADAPTIVE DOCUMENT PROCESSOR =====
+# ===== Authentication =====
+def check_password():
+    """Simplified authentication for demo purposes"""
+    if 'authenticated' not in st.session_state:
+        st.sidebar.header("🔐 Login")
+        password = st.sidebar.text_input("Enter password", type="password")
+        if password == "password":  # Replace with secure auth in production
+            st.session_state.authenticated = True
+            st.rerun()
+        elif password:
+            st.warning("🚫 Access denied")
+            st.stop()
+        else:
+            st.stop()
+    return True
+
+if not check_password():
+    st.stop()
+
+# ===== Adaptive Document Processor =====
 class SmartDocumentProcessor:
-    """
-    Intelligent document processor that handles both native text PDFs and scanned documents
-    using OCR fallback when needed.
-    """
     def __init__(self):
-        self.ocr_fallback = False  # Flag to track if OCR was used
+        self.ocr_fallback = False
         
     def process(self, pdf_bytes: bytes) -> List[Document]:
-        """
-        Process PDF bytes through multiple extraction methods:
-        1. First try structured extraction (PyPDF)
-        2. Fallback to unstructured extraction
-        3. Final fallback to OCR if needed
-        
-        Args:
-            pdf_bytes: Binary PDF content
-            
-        Returns:
-            List of processed LangChain documents with metadata
-        """
-        # Create temp file for processing
+        """Intelligently process PDF with format detection"""
         with tempfile.NamedTemporaryFile(delete=False, suffix=".pdf") as tmp_file:
             tmp_file.write(pdf_bytes)
             temp_path = tmp_file.name
         
         try:
-            # Attempt 1: Structured PDF extraction
+            # First attempt - structured extraction
             try:
                 loader = PyPDFLoader(temp_path)
                 docs = loader.load()
@@ -77,7 +73,7 @@ class SmartDocumentProcessor:
             except Exception as e:
                 st.warning(f"PyPDF failed: {str(e)}")
             
-            # Attempt 2: Unstructured PDF extraction
+            # Second attempt - unstructured extraction
             try:
                 loader = UnstructuredPDFLoader(temp_path, mode="elements")
                 docs = loader.load()
@@ -86,7 +82,7 @@ class SmartDocumentProcessor:
             except Exception as e:
                 st.warning(f"Unstructured failed: {str(e)}")
             
-            # Final fallback: OCR processing
+            # Final fallback - OCR
             self.ocr_fallback = True
             st.warning("⚠️ Using OCR...")
             images = convert_from_path(temp_path)
@@ -103,16 +99,12 @@ class SmartDocumentProcessor:
             except: pass
     
     def _is_quality_acceptable(self, docs: List[Document]) -> bool:
-        """Check if extracted content meets minimum quality standards"""
+        """Check if extraction produced usable content"""
         if not docs: return False
         return any(len(doc.page_content.strip()) > 100 for doc in docs)
     
     def _add_metadata(self, docs: List[Document]) -> List[Document]:
-        """
-        Enhance documents with additional metadata:
-        - Extracts clause/section numbers
-        - Identifies visual elements (tables, figures)
-        """
+        """Enhanced metadata extraction"""
         for doc in docs:
             # Extract clause/section numbers
             clause_match = re.search(r"(Clause|Section|Part)\s*(\d+(?:\.\d+)*)", doc.page_content, re.IGNORECASE)
@@ -124,34 +116,23 @@ class SmartDocumentProcessor:
                 doc.metadata["content_type"] = "visual"
         return docs
 
-# ===== ADAPTIVE CHUNKING =====
+# ===== Adaptive Chunker =====
 def adaptive_chunking(docs: List[Document], is_ocr: bool) -> List[Document]:
-    """
-    Intelligent document chunking that adapts based on content type:
-    - Larger chunks for OCR content to maintain context
-    - Precise chunking for native text documents
-    
-    Args:
-        docs: List of documents to chunk
-        is_ocr: Boolean indicating if content came from OCR
-        
-    Returns:
-        List of optimally chunked documents
-    """
+    """Choose chunking strategy based on content type"""
     if is_ocr:
-        # OCR-optimized chunking
+        # Larger chunks for OCR to maintain context
         splitter = RecursiveCharacterTextSplitter(
-            chunk_size=1200,  # Larger chunks
-            chunk_overlap=300,  # More overlap for context
-            separators=["\n\n", "•", "□", "■"]  # OCR-specific separators
+            chunk_size=1200,
+            chunk_overlap=300,
+            separators=["\n\n", "•", "□", "■"]
         )
     else:
-        # Native text chunking
+        # Precise chunking for native text
         splitter = RecursiveCharacterTextSplitter(
             chunk_size=1000,
             chunk_overlap=200,
             separators=["\nClause", "\nSection", "\nTable", "\nFigure", "\n\n"],
-            keep_separator=True  # Keep structural markers
+            keep_separator=True
         )
     
     chunks = splitter.split_documents(docs)
@@ -179,57 +160,35 @@ def adaptive_chunking(docs: List[Document], is_ocr: bool) -> List[Document]:
     
     return merged_chunks
 
-# ===== HYBRID RETRIEVER =====
+# ===== Smart Retriever =====
 class HybridRetriever:
-    """
-    Intelligent retriever that combines:
-    - Vector similarity search (FAISS)
-    - Keyword search (BM25)
-    Dynamically selects best method based on query type
-    """
     def __init__(self, chunks: List[Document]):
         self.embeddings = OpenAIEmbeddings(openai_api_key=OPENAI_API_KEY)
-        self.faiss = FAISS.from_documents(chunks, self.embeddings)  # Vector store
-        self.bm25 = BM25Retriever.from_documents(chunks)  # Keyword store
-        self.bm25.k = 5  # Number of results to return
+        self.faiss = FAISS.from_documents(chunks, self.embeddings)
+        self.bm25 = BM25Retriever.from_documents(chunks)
+        self.bm25.k = 5
     
     def query(self, question: str) -> List[Document]:
-        """
-        Route queries to optimal retrieval method:
-        - Exact clause/section references → BM25
-        - Conceptual questions → Hybrid approach
-        """
+        """Dynamically choose retrieval method"""
         # Exact clause/section queries
         if re.search(r"(clause|section|table)\s*[\d\.]+", question, re.IGNORECASE):
             return self.bm25.invoke(question)
         
-        # Conceptual queries use hybrid approach
+        # Conceptual queries
         faiss_results = self.faiss.similarity_search(question, k=5)
         bm25_results = self.bm25.invoke(question)
         
-        # Combine and deduplicate results
+        # Hybrid reranking
         combined = {doc.metadata.get("page", ""): doc for doc in faiss_results + bm25_results}
         return list(combined.values())[:5]
 
-# ===== ADAPTIVE QA SYSTEM =====
+# ===== Adaptive QA System =====
 def create_qa_system(retriever: HybridRetriever, is_complex: bool):
-    """
-    Creates question-answering system configured for either:
-    - Detailed technical answers (GPT-4)
-    - Concise responses (GPT-3.5)
-    
-    Args:
-        retriever: Configured HybridRetriever instance
-        is_complex: Boolean indicating if question requires detailed answer
-        
-    Returns:
-        Configured RetrievalQA chain
-    """
+    """Configure QA chain based on query complexity"""
     if is_complex:
-        # Detailed answer configuration
         llm = ChatOpenAI(
-            model="gpt-4-turbo-preview",  # More capable model
-            temperature=0.2,  # Slightly creative
+            model="gpt-4-turbo-preview",
+            temperature=0.2,
             openai_api_key=OPENAI_API_KEY
         )
         prompt = """Answer in detail with technical precision:
@@ -240,10 +199,9 @@ def create_qa_system(retriever: HybridRetriever, is_complex: bool):
         2. Explain underlying principles
         3. Compare to related standards if relevant"""
     else:
-        # Concise answer configuration
         llm = ChatOpenAI(
-            model="gpt-3.5-turbo",  # Faster model
-            temperature=0,  # More deterministic
+            model="gpt-3.5-turbo",
+            temperature=0,
             openai_api_key=OPENAI_API_KEY
         )
         prompt = """Give concise answer:
@@ -256,47 +214,45 @@ def create_qa_system(retriever: HybridRetriever, is_complex: bool):
     return RetrievalQA.from_chain_type(
         llm=llm,
         retriever=retriever,
-        chain_type="stuff",  # Simple question-answering
+        chain_type="stuff",
         chain_type_kwargs={"prompt": PromptTemplate.from_template(prompt)},
-        return_source_documents=True  # Return references
+        return_source_documents=True
     )
 
-# ===== MAIN APPLICATION UI =====
+# ===== Main Application =====
 st.title("⚡ Hybrid Codes & Standards Assistant")
 st.markdown("""
 ⚠️ _This adaptive tool provides optimized interpretations based on your document type and questions._
 """)
 
-# Document selection UI
+# Document Selection
 PRELOADED_STANDARDS = {
     "None (Upload Your Own)": None,
-    "AS/NZS 3000:2018 (Sample)": "https://example.com/as3000.pdf"  # Replace with actual URL
+    "AS/NZS 3000:2018 (Sample)": "https://example.com/as3000.pdf"
 }
 selected_std = st.selectbox("Choose standard:", list(PRELOADED_STANDARDS.keys()))
 
-# File upload UI
+# File Upload
 uploaded_file = st.file_uploader("📎 Or upload PDF", type="pdf")
 if not uploaded_file and selected_std == "None (Upload Your Own)":
     st.warning("⚠️ Please upload a PDF or select a standard.")
     st.stop()
 
-# Document processing pipeline
+# Document Processing
 with st.spinner("🔍 Analyzing document..."):
     processor = SmartDocumentProcessor()
     
-    # Get document content
     if selected_std != "None (Upload Your Own)":
         pdf_bytes = requests.get(PRELOADED_STANDARDS[selected_std]).content
     else:
         pdf_bytes = uploaded_file.read()
     
-    # Process and prepare document
     docs = processor.process(pdf_bytes)
     chunks = adaptive_chunking(docs, processor.ocr_fallback)
     retriever = HybridRetriever(chunks)
     st.success(f"✅ Document ready! (OCR: {'Yes' if processor.ocr_fallback else 'No'})")
 
-# Question handling
+# Query Handling
 query = st.text_input("💬 Ask about the standard:")
 if query:
     start_time = time.time()
@@ -308,25 +264,23 @@ if query:
         qa = create_qa_system(retriever, is_complex)
         result = qa({"query": query})
         
-        # Display results
+        # Display Results
         st.subheader("🔍 Answer")
         st.write(result["result"])
         
-        # Show performance metrics
         st.subheader("⚙️ Performance Metrics")
         col1, col2 = st.columns(2)
         col1.metric("Response Time", f"{time.time() - start_time:.2f}s")
         col2.metric("Sources Used", len(result["source_documents"]))
         
-        # Display source references
         st.subheader("📚 Source References")
         sources = []
-        for doc in result["source_documents"][:3]:  # Show top 3 sources
+        for doc in result["source_documents"][:3]:
             clause = doc.metadata.get("clause", "N/A")
             sources.append({
                 "Page": doc.metadata.get("page", "N/A"),
                 "Clause": clause,
-                "Preview": doc.page_content[:200] + "..."  # Preview snippet
+                "Preview": doc.page_content[:200] + "..."
             })
         
         st.dataframe(pd.DataFrame(sources), hide_index=True)
