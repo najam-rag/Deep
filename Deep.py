@@ -177,3 +177,23 @@ def create_qa_system(retriever: HybridRetriever, is_complex: bool):
         return_source_documents=True
     )
     return qa
+    
+# ===== MAIN STREAMLIT INTERFACE =====
+st.title("📘 Hybrid Standards Q&A Assistant")
+
+uploaded_file = st.file_uploader("📎 Upload your code PDF", type="pdf")
+question = st.text_input("❓ Enter your question about the code:")
+is_complex = st.toggle("Detailed (Use GPT-4)", value=False)
+
+if uploaded_file and question:
+    with st.spinner("🔍 Processing document..."):
+        processor = SmartDocumentProcessor()
+        docs = processor.process(uploaded_file.read())
+        chunks = adaptive_chunking(docs, processor.ocr_fallback)
+        retriever = HybridRetriever(chunks)
+        qa = create_qa_system(retriever, is_complex=is_complex)
+    
+    with st.spinner("💬 Generating answer..."):
+        response = qa.run(question)
+        st.success("✅ Answer generated:")
+        st.markdown(response)
