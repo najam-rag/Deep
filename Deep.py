@@ -3,197 +3,89 @@ import os
 import tempfile
 import re
 from typing import List
-
-# Document Processing
-from langchain_community.document_loaders import PyPDFLoader, UnstructuredPDFLoader
+from langchain_community.document_loaders import PyPDFLoader
 from langchain_text_splitters import RecursiveCharacterTextSplitter
-from pdf2image import convert_from_path
-import pytesseract
+from langchain.vectorstores import FAISS
+from langchain.embeddings import OpenAIEmbeddings
+from langchain.chains import RetrievalQA
+from langchain_openai import ChatOpenAI
+from langchain_core.prompts import PromptTemplate
 from langchain_core.documents import Document
 
-# Vectorstores and Retrieval
-from langchain_community.vectorstores import FAISS
-from langchain_community.embeddings import OpenAIEmbeddings
-from langchain_community.retrievers import BM25Retriever
-
-# LLM Components
-from langchain_openai import ChatOpenAI
-from langchain.chains import RetrievalQA
-from langchain_core.prompts import PromptTemplate
-
-# === Streamlit Configuration ===
-st.set_page_config(page_title="⚡ Hybrid Codes Assistant", layout="wide")
+# === App Config ===
+st.set_page_config(page_title="📘 Ask Your Standards Assistant", layout="wide")
+st.title("📘 Ask Your Standards Assistant")
 OPENAI_API_KEY = st.secrets["OPENAI_API_KEY"]
 
-# === Password Auth ===
-def check_password():
-    if 'authenticated' not in st.session_state:
-        st.sidebar.header("🔐 Login")
-        password = st.sidebar.text_input("Enter password", type="password")
-        if password == "password":
-            st.session_state.authenticated = True
-            st.rerun()
-        elif password:
-            st.warning("🚫 Access denied")
-            st.stop()
-        else:
-            st.stop()
-    return True
+# === File Upload ===
+st.markdown("Upload PDF (e.g. AS3000)")
+uploaded_file = st.file_uploader("Drag and drop file here", type=["pdf"])
 
-if not check_password():
-    st.stop()
-
-# === Smart Document Processor ===
-class SmartDocumentProcessor:
-    def __init__(self):
-        self.ocr_fallback = False
-
-    def process(self, pdf_bytes: bytes) -> List[Document]:
-        with tempfile.NamedTemporaryFile(delete=False, suffix=".pdf") as tmp_file:
-            tmp_file.write(pdf_bytes)
-            temp_path = tmp_file.name
-
-        try:
-            try:
-                loader = PyPDFLoader(temp_path)
-                docs = loader.load()
-                if self._is_quality_acceptable(docs):
-                    return self._add_metadata(docs)
-            except Exception as e:
-                st.warning(f"PyPDF failed: {str(e)}")
-
-            try:
-                loader = UnstructuredPDFLoader(temp_path, mode="elements")
-                docs = loader.load()
-                if self._is_quality_acceptable(docs):
-                    return self._add_metadata(docs)
-            except Exception as e:
-                st.warning(f"Unstructured failed: {str(e)}")
-
-            self.ocr_fallback = True
-            st.warning("⚠️ Using OCR...")
-            images = convert_from_path(temp_path, dpi=200)
-            texts = [pytesseract.image_to_string(img) for img in images]
-            docs = [Document(page_content=t, metadata={"page": i + 1, "source": "OCR"})
-                    for i, t in enumerate(texts) if t.strip()]
-            return self._add_metadata(docs)
-
-        except Exception as e:
-            st.error(f"❌ Processing failed: {str(e)}")
-            st.stop()
-        finally:
-            try:
-                os.unlink(temp_path)
-            except:
-                pass
-
-    def _is_quality_acceptable(self, docs: List[Document]) -> bool:
-        return any(len(doc.page_content.strip()) > 100 for doc in docs)
-
-    def _add_metadata(self, docs: List[Document]) -> List[Document]:
-        for doc in docs:
-            clause_match = re.search(r"(Clause|Section|Part)\s*(\d+(?:\.\d+)*)", doc.page_content, re.IGNORECASE)
-            if clause_match:
-                doc.metadata["clause"] = f"{clause_match.group(1)} {clause_match.group(2)}"
-            if any(x in doc.page_content[:100] for x in ["Table", "Figure", "Diagram"]):
-                doc.metadata["content_type"] = "visual"
-        return docs
-
-# === Adaptive Chunker ===
-def adaptive_chunking(docs: List[Document], is_ocr: bool) -> List[Document]:
-    splitter = RecursiveCharacterTextSplitter(
-        chunk_size=1200 if is_ocr else 1000,
-        chunk_overlap=300 if is_ocr else 200,
-        separators=["\n\n", "•", "□", "■"] if is_ocr else ["\nClause", "\nSection", "\nTable", "\nFigure", "\n\n"],
-        keep_separator=not is_ocr
+# === Prompt Template ===
+def create_prompt_template(is_complex: bool):
+    template = """
+    {instruction}
+    Context: {context}
+    Question: {question}
+    Rules:
+    1. Cite sources like [Clause X.Y]
+    {rules}
+    """
+    return PromptTemplate.from_template(template).partial(
+        instruction="Answer in detail with technical precision:" if is_complex else "Give concise answer:",
+        rules="2. Explain underlying principles\n3. Compare to related standards if relevant" if is_complex else "2. Keep answer under 2 sentences"
     )
 
-    chunks = splitter.split_documents(docs)
-    merged_chunks = []
-    buffer = ""
-    for chunk in chunks:
-        if chunk.metadata.get("content_type") == "visual":
-            if buffer:
-                merged_chunks.append(Document(page_content=buffer, metadata=chunks[0].metadata))
-                buffer = ""
-            merged_chunks.append(chunk)
-        else:
-            buffer += "\n\n" + chunk.page_content
-
-    if buffer:
-        merged_chunks.append(Document(page_content=buffer, metadata=chunks[0].metadata))
-
-    return merged_chunks
-
-# === Hybrid Retriever ===
-class HybridRetriever:
-    def __init__(self, chunks: List[Document]):
-        self.embeddings = OpenAIEmbeddings(model="text-embedding-3-small", openai_api_key=OPENAI_API_KEY)
-        self.faiss = FAISS.from_documents(chunks, self.embeddings)
-        texts = [doc.page_content for doc in chunks]
-        self.bm25 = BM25Retriever.from_texts(texts)
-        self.bm25.k = 5
-
-    def query(self, question: str) -> List[Document]:
-        if re.search(r"(clause|section|table)\s*[\d\.]+", question, re.IGNORECASE):
-            return self.bm25.invoke(question)
-        faiss_results = self.faiss.similarity_search(question, k=5)
-        bm25_results = self.bm25.invoke(question)
-        combined = {doc.metadata.get("page", ""): doc for doc in faiss_results + bm25_results}
-        return list(combined.values())[:5]
+# === Document Chunking ===
+def chunk_pdf(file_path):
+    loader = PyPDFLoader(file_path)
+    documents = loader.load()
+    splitter = RecursiveCharacterTextSplitter(chunk_size=1000, chunk_overlap=200)
+    return splitter.split_documents(documents)
 
 # === QA System ===
-def create_qa_system(retriever: HybridRetriever, is_complex: bool):
-    llm = ChatOpenAI(
-        model="gpt-4-turbo-preview" if is_complex else "gpt-3.5-turbo",
-        temperature=0.2 if is_complex else 0,
-        openai_api_key=OPENAI_API_KEY
-    )
+def create_qa_system(chunks: List[Document], is_complex: bool):
+    embeddings = OpenAIEmbeddings(model="text-embedding-3-small", openai_api_key=OPENAI_API_KEY)
+    db = FAISS.from_documents(chunks, embeddings)
+    retriever = db.as_retriever()
 
-    prompt_text = (
-        "Answer in detail with technical precision:\n"
-        "Context: {context}\n"
-        "Question: {question}\n"
-        "Rules:\n"
-        "1. Cite sources like [Clause X.Y]\n"
-        "2. Explain underlying principles\n"
-        "3. Compare to related standards if relevant"
-        if is_complex else
-        "Give concise answer:\n"
-        "Context: {context}\n"
-        "Question: {question}\n"
-        "Rules:\n"
-        "1. Cite source if available\n"
-        "2. Keep answer under 2 sentences"
-    )
-
-    prompt = PromptTemplate.from_template(prompt_text)
+    llm = ChatOpenAI(model="gpt-4-turbo-preview" if is_complex else "gpt-3.5-turbo", temperature=0.2 if is_complex else 0, openai_api_key=OPENAI_API_KEY)
+    prompt = create_prompt_template(is_complex)
 
     qa = RetrievalQA.from_chain_type(
         llm=llm,
         retriever=retriever,
+        return_source_documents=True,
         chain_type="stuff",
-        chain_type_kwargs={"prompt": prompt},
-        return_source_documents=True
+        chain_type_kwargs={"prompt": prompt}
     )
     return qa
-    
-# ===== MAIN STREAMLIT INTERFACE =====
-st.title("📘 Hybrid Standards Q&A Assistant")
 
-uploaded_file = st.file_uploader("📎 Upload your code PDF", type="pdf")
-question = st.text_input("❓ Enter your question about the code:")
-is_complex = st.toggle("Detailed (Use GPT-4)", value=False)
+# === Main Workflow ===
+if uploaded_file:
+    with tempfile.NamedTemporaryFile(delete=False, suffix=".pdf") as tmp:
+        tmp.write(uploaded_file.read())
+        file_path = tmp.name
 
-if uploaded_file and question:
-    with st.spinner("🔍 Processing document..."):
-        processor = SmartDocumentProcessor()
-        docs = processor.process(uploaded_file.read())
-        chunks = adaptive_chunking(docs, processor.ocr_fallback)
-        retriever = HybridRetriever(chunks)
-        qa = create_qa_system(retriever, is_complex=is_complex)
-    
-    with st.spinner("💬 Generating answer..."):
-        response = qa.run(question)
-        st.success("✅ Answer generated:")
-        st.markdown(response)
+    st.success(f"Uploaded: {uploaded_file.name}")
+    st.markdown("---")
+
+    with st.spinner("🔍 Processing document and building QA system..."):
+        chunks = chunk_pdf(file_path)
+        qa = create_qa_system(chunks, is_complex=True)
+        st.session_state.qa = qa
+
+# === Ask Questions ===
+if "qa" in st.session_state:
+    question = st.text_input("🔎 Enter your question")
+    if question:
+        with st.spinner("Generating answer..."):
+            response = st.session_state.qa.invoke({"query": question})
+            st.markdown("### 📄 Answer")
+            st.write(response["result"])
+
+            st.markdown("---")
+            st.markdown("#### 📚 Source Excerpts")
+            for doc in response["source_documents"]:
+                st.markdown(f"**Page**: {doc.metadata.get('page', 'N/A')}")
+                st.markdown(f"```\n{doc.page_content[:1000]}\n```")
