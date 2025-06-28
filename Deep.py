@@ -1,12 +1,9 @@
 import streamlit as st
 import os
-import hashlib
 import tempfile
 import re
-import time
+from typing import List
 from datetime import datetime
-from functools import wraps
-from typing import List, Tuple, Optional
 
 # Document Processing
 from langchain_community.document_loaders import PyPDFLoader, UnstructuredPDFLoader
@@ -25,11 +22,7 @@ from langchain_openai import ChatOpenAI
 from langchain.chains import RetrievalQA
 from langchain_core.prompts import PromptTemplate
 
-# UI and Utilities
-import pandas as pd
-import requests
-
-# ===== Configuration =====
+# Streamlit config
 st.set_page_config(page_title="⚡ Hybrid Codes Assistant", layout="wide")
 OPENAI_API_KEY = st.secrets["OPENAI_API_KEY"]
 
@@ -96,15 +89,13 @@ class SmartDocumentProcessor:
                 pass
 
     def _is_quality_acceptable(self, docs: List[Document]) -> bool:
-        if not docs:
-            return False
         return any(len(doc.page_content.strip()) > 100 for doc in docs)
 
     def _add_metadata(self, docs: List[Document]) -> List[Document]:
         for doc in docs:
-            clause_match = re.search(r"(Clause|Section|Part)\s*(\d+(?:\.\d+)*)", doc.page_content, re.IGNORECASE)
-            if clause_match:
-                doc.metadata["clause"] = f"{clause_match.group(1)} {clause_match.group(2)}"
+            match = re.search(r"(Clause|Section|Part)\s*(\d+(?:\.\d+)*)", doc.page_content, re.IGNORECASE)
+            if match:
+                doc.metadata["clause"] = f"{match.group(1)} {match.group(2)}"
             if any(x in doc.page_content[:100] for x in ["Table", "Figure", "Diagram"]):
                 doc.metadata["content_type"] = "visual"
         return docs
@@ -117,7 +108,6 @@ def adaptive_chunking(docs: List[Document], is_ocr: bool) -> List[Document]:
         separators=["\n\n", "•", "□", "■"] if is_ocr else ["\nClause", "\nSection", "\nTable", "\nFigure", "\n\n"],
         keep_separator=not is_ocr
     )
-
     chunks = splitter.split_documents(docs)
     merged_chunks = []
     buffer = ""
@@ -152,7 +142,7 @@ class HybridRetriever:
         combined = {doc.metadata.get("page", ""): doc for doc in faiss_results + bm25_results}
         return list(combined.values())[:5]
 
-# ===== Adaptive QA System =====
+# ===== QA System =====
 def create_qa_system(retriever: HybridRetriever, is_complex: bool):
     llm = ChatOpenAI(
         model="gpt-4-turbo-preview" if is_complex else "gpt-3.5-turbo",
@@ -160,18 +150,20 @@ def create_qa_system(retriever: HybridRetriever, is_complex: bool):
         openai_api_key=OPENAI_API_KEY
     )
 
-    prompt_text = """Answer in detail with technical precision:
+    prompt_text = ("""Answer in detail with technical precision:
 Context: {context}
 Question: {question}
 Rules:
 1. Cite sources like [Clause X.Y]
 2. Explain underlying principles
-3. Compare to related standards if relevant""" if is_complex else """Give concise answer:
+3. Compare to related standards if relevant"""
+    if is_complex else
+    """Give concise answer:
 Context: {context}
 Question: {question}
 Rules:
 1. Cite source if available
-2. Keep answer under 2 sentences"""
+2. Keep answer under 2 sentences""")
 
     prompt = PromptTemplate.from_template(prompt_text)
 
@@ -183,3 +175,28 @@ Rules:
         return_source_documents=True
     )
     return qa
+
+# ===== Streamlit App UI =====
+st.title("📘 Ask Your Standards Assistant")
+
+uploaded_file = st.file_uploader("📎 Upload PDF (e.g. AS3000)", type="pdf")
+question = st.text_input("🔍 Enter your question")
+
+if uploaded_file and question:
+    processor = SmartDocumentProcessor()
+    docs = processor.process(uploaded_file.read())
+
+    chunks = adaptive_chunking(docs, processor.ocr_fallback)
+    retriever = HybridRetriever(chunks)
+
+    is_complex = any(w in question.lower() for w in ["why", "how", "difference", "compare"])
+    qa = create_qa_system(retriever, is_complex)
+    result = qa.invoke(question)
+
+    st.subheader("📝 Answer")
+    st.write(result["result"])
+
+    st.subheader("📚 Sources")
+    for i, doc in enumerate(result["source_documents"], 1):
+        st.markdown(f"**Source {i}** (Page {doc.metadata.get('page', '?')}):")
+        st.code(doc.page_content.strip()[:500] + "...")
