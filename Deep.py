@@ -13,7 +13,7 @@ from langchain_community.document_loaders import PyPDFLoader, UnstructuredPDFLoa
 from langchain_text_splitters import RecursiveCharacterTextSplitter
 from pdf2image import convert_from_path
 import pytesseract
-from langchain.schema import Document
+from langchain_core.documents import Document
 
 # Vectorstores and Retrieval
 from langchain_community.vectorstores import FAISS
@@ -23,7 +23,7 @@ from langchain_community.retrievers import BM25Retriever
 # LLM Components
 from langchain_openai import ChatOpenAI
 from langchain.chains import RetrievalQA
-from langchain.prompts import PromptTemplate
+from langchain_core.prompts import PromptTemplate
 
 # UI and Utilities
 import pandas as pd
