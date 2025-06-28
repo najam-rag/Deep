@@ -163,9 +163,15 @@ def adaptive_chunking(docs: List[Document], is_ocr: bool) -> List[Document]:
 # ===== Smart Retriever =====
 class HybridRetriever:
     def __init__(self, chunks: List[Document]):
-        self.embeddings = OpenAIEmbeddings(openai_api_key=OPENAI_API_KEY)
+        self.embeddings = OpenAIEmbeddings(
+            model="text-embedding-3-small",  # or "text-embedding-ada-002"
+            openai_api_key=OPENAI_API_KEY
+        )
         self.faiss = FAISS.from_documents(chunks, self.embeddings)
-        self.bm25 = BM25Retriever.from_documents(chunks)
+
+        # Convert to plain text for BM25
+        texts = [doc.page_content for doc in chunks]
+        self.bm25 = BM25Retriever.from_texts(texts)
         self.bm25.k = 5
     
     def query(self, question: str) -> List[Document]:
