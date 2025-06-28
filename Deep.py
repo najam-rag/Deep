@@ -2,19 +2,17 @@
 import streamlit as st
 import sqlite3
 from datetime import datetime
-from passlib.hash import pbkdf2_sha256  # For password hashing
 
 # Initialize database
 def init_db():
     conn = sqlite3.connect('users.db')
     c = conn.cursor()
     
-    # Create users table with last_login column
     c.execute('''
         CREATE TABLE IF NOT EXISTS users (
             id INTEGER PRIMARY KEY AUTOINCREMENT,
             username TEXT UNIQUE NOT NULL,
-            password_hash TEXT NOT NULL,
+            password TEXT NOT NULL,
             last_login DATETIME,
             created_at DATETIME DEFAULT CURRENT_TIMESTAMP
         )
@@ -41,8 +39,8 @@ def create_user(username, password):
     c = conn.cursor()
     try:
         c.execute(
-            'INSERT INTO users (username, password_hash) VALUES (?, ?)',
-            (username, pbkdf2_sha256.hash(password))
+            'INSERT INTO users (username, password) VALUES (?, ?)',
+            (username, password)
         )
         conn.commit()
         return True
@@ -75,7 +73,7 @@ def login():
         
         if submit_button:
             user = get_user(username)
-            if user and pbkdf2_sha256.verify(password, user[2]):
+            if user and password == user[2]:  # Compare plain text
                 st.session_state.authenticated = True
                 st.session_state.username = username
                 update_last_login(username)
@@ -108,7 +106,6 @@ def dashboard():
     st.title(f"Welcome, {st.session_state.username}!")
     st.write("You're now logged in.")
     
-    # Display user info
     user = get_user(st.session_state.username)
     st.write(f"Account created: {user[4]}")
     st.write(f"Last login: {user[3] or 'Never'}")
