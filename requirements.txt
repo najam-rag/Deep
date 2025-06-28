@@ -11,3 +11,4 @@ faiss-cpu
 pandas
 requests
 tqdm
+rank_bm25
