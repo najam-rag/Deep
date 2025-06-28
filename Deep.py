@@ -160,14 +160,24 @@ def create_qa_system(retriever: HybridRetriever, is_complex: bool):
         openai_api_key=OPENAI_API_KEY
     )
 
-    prompt = PromptTemplate.from_template("""
-    {"""Answer in detail with technical precision:""" if is_complex else """Give concise answer:"""}
-    Context: {context}
-    Question: {question}
-    Rules:
-    1. Cite sources like [Clause X.Y]
-    2. {'Explain underlying principles\n3. Compare to related standards if relevant' if is_complex else 'Keep answer under 2 sentences'}
-    """)
+if is_complex:
+    prompt_text = """Answer in detail with technical precision:
+Context: {context}
+Question: {question}
+Rules:
+1. Cite sources like [Clause X.Y]
+2. Explain underlying principles
+3. Compare to related standards if relevant"""
+else:
+    prompt_text = """Give concise answer:
+Context: {context}
+Question: {question}
+Rules:
+1. Cite source if available
+2. Keep answer under 2 sentences"""
+
+prompt = PromptTemplate.from_template(prompt_text)
+
 
     qa = RetrievalQA.from_chain_type(
         llm=llm,
